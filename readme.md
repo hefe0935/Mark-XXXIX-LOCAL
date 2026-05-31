@@ -1,82 +1,82 @@
-# 🤖 MARK XXXIX-OR (39)
-### The Ultimate Cross-Platform Personal AI Assistant — By FatihMakes
+﻿# MARK XXXIX-OR
 
-> 📺 **[Watch the full setup video on YouTube](https://youtu.be/ldvDNzwnM8k)**
+# MARK XXXIX-OR Local Fork
+A personal desktop assistant forked from the original MARK XXXIX-OR project. This version keeps the Jarvis-style voice interface, desktop actions, file tools, memory, web helpers, and planning workflow, while preferring a local Ollama model for normal LLM work.
 
-A real-time voice AI that can hear, see, understand, and control your computer — on any OS. Supporting Windows, macOS, and Linux. Local execution. Zero subscriptions. Engineered for total autonomy.
+The goal of this fork is simple: keep the assistant practical, easier to run, and less dependent on hosted model quotas.
 
----
+## What Changed In This Fork
 
-## ✨ Overview
+- Local-first LLM calls through Ollama, using `qwen3:8b` by default.
+- OpenRouter is now only a fallback for modules that use `or_client.py`.
+- The setup screen can enable Ollama and choose one of the local models already installed.
 
-MARK XXXIX-OR represents the pinnacle of the Jarvis series, evolving into a more flexible and robust system. It bridges the gap between the operating system and human intent. Through natural dialogue, Mark 39 analyzes your screen, processes uploaded documents, and executes complex workflows with a brand-new, adaptive interface.
+Gemini Live is still available when Ollama is disabled and a Gemini key is saved. When Ollama is enabled, startup does not require a Gemini key and local responses are spoken with the operating system voice.
 
-It's not just an assistant — it's an extension of your digital life.
+## Requirements
 
----
+- Windows 10/11, macOS, or Linux
+- Python 3.11
+- Ollama running locally
+- A local Ollama model, recommended: `qwen3:8b`
+- Gemini API key only when using Gemini Live mode
+- Optional OpenRouter key for fallback remote model calls
+- Microphone access for voice mode
 
-## 🚀 Capabilities
+## Local Setup
 
-### Core Features
-| Feature | Description |
-|---|---|
-| 🎙️ Real-time Voice | Ultra-low latency conversation in any language |
-| 🖥️ System Control | Launch apps, manage files, execute terminal commands |
-| 🧩 Autonomous Tasks | High-level planning for complex, multi-step goals |
-| 👁️ Visual Awareness | Real-time screen processing and webcam vision |
-| 🧠 Persistent Memory | Deeply remembers your projects, preferences, and personal context |
-| ⌨️ Hybrid Input | Seamlessly switch between keyboard typing and voice commands |
-
----
-
-## 🆕 What's New in XXXIX-OR
-
-- 📂 **Advanced File Handling** — New support for direct file uploads. Drop PDFs, source code, or images into the assistant to have them analyzed, summarized, or edited instantly.
-- 🎨 **Adaptive & Flexible UI** — A complete overhaul of the interface. The new UI is fully resizable and responsive, featuring transparency controls and customizable layouts to fit your workspace perfectly.
-- 🐧🍎 **Refined Cross-Platform Stability** — Major fixes for macOS and Linux compatibility. Core system actions are now more consistent across all three major operating systems.
-- ⚡ **Optimized Core Engine** — Significant performance boost in tool-calling logic and response generation, resulting in a 40% faster interaction speed.
-- 🔀 **OpenRouter Integration** — Selected action modules (web search, memory, flight finder, desktop control, and more) now route their LLM calls through OpenRouter's free-tier models. This significantly increases the effective request limit without any additional cost, while Gemini Live continues to handle real-time voice and tool-calling.
-
----
-
-## ⚡ Quick Start
-
-```bash
-git clone https://github.com/FatihMakes/Mark-XXXIX-OR.git
-cd Mark-XXXIX-OR
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 pip install -r requirements.txt
-playwright install
+python -m playwright install
+```
+
+Install and start the local model:
+
+```powershell
+ollama pull qwen3:8b
+ollama serve
+```
+
+Run the assistant:
+
+```powershell
 python main.py
 ```
 
-> ⚠️ **Installation Note:** To keep the repository lightweight, some OS-specific dependencies are not bundled in `requirements.txt`. If you run into a `ModuleNotFoundError`, simply install the missing package via `pip install <module_name>` for your specific system.
+## Local AI Settings
 
----
+The local client reads these environment variables:
 
-## 📋 Requirements
+```powershell
+$env:USE_OLLAMA = "1"
+$env:OLLAMA_HOST = "http://127.0.0.1:11434"
+$env:OLLAMA_MODEL = "qwen3:8b"
+```
 
-| Requirement | Details |
-|---|---|
-| **OS** | Windows 10/11, macOS, or Linux |
-| **Python** | 3.11 or 3.12 |
-| **Microphone** | Required for voice interaction |
-| **API Keys** | Free Gemini API key + Free OpenRouter API key |
+Those are already the defaults. The first startup screen also saves the Ollama choice and selected local model into `config/api_keys.json`. Environment variables still override the saved values when set.
 
----
+To use OpenRouter as fallback, add this to `config/api_keys.json`:
 
-## ⚠️ License
+```json
+{
+  "gemini_api_key": "your-gemini-key",
+  "openrouter_api_key": "your-openrouter-key",
+  "os_system": "windows",
+  "use_ollama": true,
+  "ollama_host": "http://127.0.0.1:11434",
+  "ollama_model": "qwen3:8b"
+}
+```
 
-Personal and non-commercial use only.
-Licensed under **[Creative Commons BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)**.
+For local mode, `gemini_api_key` and `openrouter_api_key` can be left blank. Gemini is only needed when `use_ollama` is false and the app should use Gemini Live.
 
----
+## Notes
 
-## 👤 Connect with the Creator
+Some OS-specific packages can be picky. If a dependency fails during install, check the package name and Python version first. `pyaudio`, `pycaw`, `comtypes`, and `pywinauto` are the usual Windows-sensitive ones.
 
-Engineered by a developer building a real-world JARVIS-style assistant.
-⭐ **Star the repository to support the journey to Mark 100.**
+## License
 
-| Platform | Link |
-|---|---|
-| YouTube | [@FatihMakes](https://www.youtube.com/@FatihMakes) |
-| Instagram | [@fatihmakes](https://www.instagram.com/fatihmakes) |
+This fork follows the original project's personal and non-commercial use terms under Creative Commons BY-NC 4.0.

@@ -25,7 +25,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QPushButton, QScrollArea, QSizePolicy, QTextEdit,
-    QVBoxLayout, QWidget, QProgressBar,
+    QVBoxLayout, QWidget, QProgressBar, QCheckBox, QComboBox,
 )
 
 def _base_dir() -> Path:
@@ -856,7 +856,7 @@ class _DropCanvas(QWidget):
 
 
 class SetupOverlay(QWidget):
-    done = pyqtSignal(str, str, str)
+    done = pyqtSignal(str, str, str, bool, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -873,6 +873,7 @@ class SetupOverlay(QWidget):
             _OS.lower(), "linux"
         )
         self._sel_os = detected
+        self._ollama_models = self._load_ollama_models()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(30, 22, 30, 22)
@@ -895,7 +896,7 @@ class SetupOverlay(QWidget):
         sep.setStyleSheet(f"color: {C.BORDER};"); layout.addWidget(sep)
         layout.addSpacing(4)
 
-        layout.addWidget(_lbl("GEMINI API KEY", 8, color=C.TEXT_DIM,
+        layout.addWidget(_lbl("GEMINI API KEY (OPTIONAL WITH OLLAMA)", 8, color=C.TEXT_DIM,
                                align=Qt.AlignmentFlag.AlignLeft))
         self._key_input = QLineEdit()
         self._key_input.setEchoMode(QLineEdit.EchoMode.Password)
@@ -912,11 +913,11 @@ class SetupOverlay(QWidget):
         layout.addWidget(self._key_input)
         layout.addSpacing(8)
 
-        layout.addWidget(_lbl("OPENROUTER API KEY", 8, color=C.TEXT_DIM,
+        layout.addWidget(_lbl("OPENROUTER API KEY (OPTIONAL FALLBACK)", 8, color=C.TEXT_DIM,
                        align=Qt.AlignmentFlag.AlignLeft))
         self._or_input = QLineEdit()
         self._or_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self._or_input.setPlaceholderText("sk-or-…")
+        self._or_input.setPlaceholderText("Leave blank when using Ollama locally")
         self._or_input.setFont(QFont("Courier New", 10))
         self._or_input.setFixedHeight(32)
         self._or_input.setStyleSheet(f"""
@@ -928,7 +929,50 @@ class SetupOverlay(QWidget):
         """)
         layout.addWidget(self._or_input)
 
-        layout.addSpacing(12)
+        layout.addSpacing(8)
+
+        self._ollama_check = QCheckBox("USE OLLAMA LOCAL AI")
+        self._ollama_check.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
+        self._ollama_check.setChecked(bool(self._ollama_models))
+        self._ollama_check.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._ollama_check.setStyleSheet(f"""
+            QCheckBox {{
+                color: {C.GREEN}; background: transparent; spacing: 8px;
+            }}
+            QCheckBox::indicator {{
+                width: 15px; height: 15px;
+                background: #000d12; border: 1px solid {C.BORDER}; border-radius: 2px;
+            }}
+            QCheckBox::indicator:checked {{
+                background: {C.GREEN}; border: 1px solid {C.GREEN};
+            }}
+        """)
+        layout.addWidget(self._ollama_check)
+
+        self._ollama_model = QComboBox()
+        self._ollama_model.setFont(QFont("Courier New", 9))
+        self._ollama_model.setFixedHeight(32)
+        self._ollama_model.setStyleSheet(f"""
+            QComboBox {{
+                background: #000d12; color: {C.TEXT};
+                border: 1px solid {C.BORDER}; border-radius: 3px; padding: 4px 8px;
+            }}
+            QComboBox:disabled {{ color: {C.TEXT_DIM}; border: 1px solid {C.BORDER_A}; }}
+            QComboBox QAbstractItemView {{
+                background: #000d12; color: {C.TEXT};
+                selection-background-color: {C.PRI_GHO};
+                border: 1px solid {C.BORDER};
+            }}
+        """)
+        for model in self._ollama_models or ["qwen3:8b"]:
+            self._ollama_model.addItem(model)
+        if "qwen3:8b" in self._ollama_models:
+            self._ollama_model.setCurrentText("qwen3:8b")
+        self._ollama_check.toggled.connect(self._sync_ollama)
+        layout.addWidget(self._ollama_model)
+        self._sync_ollama(self._ollama_check.isChecked())
+
+        layout.addSpacing(10)
 
         sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
         sep2.setStyleSheet(f"color: {C.BORDER};"); layout.addWidget(sep2)
@@ -991,22 +1035,52 @@ class SetupOverlay(QWidget):
                     QPushButton:hover {{ color: {C.TEXT}; border: 1px solid {C.BORDER_B}; }}
                 """)
 
+    def _load_ollama_models(self) -> list[str]:
+        try:
+            result = subprocess.run(
+                ["ollama", "list"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                return []
+            models = []
+            for line in result.stdout.splitlines()[1:]:
+                parts = line.split()
+                if parts:
+                    models.append(parts[0])
+            return models
+        except Exception:
+            return []
+
+    def _sync_ollama(self, checked: bool):
+        self._ollama_model.setEnabled(checked)
+
     def _submit(self):
         key = self._key_input.text().strip()
         or_key = self._or_input.text().strip()
-        if not key:
+        use_ollama = self._ollama_check.isChecked()
+        ollama_model = self._ollama_model.currentText().strip()
+        if not key and not use_ollama:
             self._key_input.setStyleSheet(
                 self._key_input.styleSheet() +
                 f" QLineEdit {{ border: 1px solid {C.RED}; }}"
             )
             return
-        if not or_key:
+        if not use_ollama and not or_key:
             self._or_input.setStyleSheet(
                 self._or_input.styleSheet() +
                 f" QLineEdit {{ border: 1px solid {C.RED}; }}"
             )
             return
-        self.done.emit(key, or_key, self._sel_os)
+        if use_ollama and not ollama_model:
+            self._ollama_model.setStyleSheet(
+                self._ollama_model.styleSheet() +
+                f" QComboBox {{ border: 1px solid {C.RED}; }}"
+            )
+            return
+        self.done.emit(key, or_key, self._sel_os, use_ollama, ollama_model)
 
 
 class MainWindow(QMainWindow):
@@ -1442,16 +1516,14 @@ class MainWindow(QMainWindow):
         if not API_FILE.exists(): return False
         try:
             d = json.loads(API_FILE.read_text(encoding="utf-8"))
-            return (bool(d.get("gemini_api_key")) and
-                    bool(d.get("openrouter_api_key")) and
-                    bool(d.get("os_system")))
+            return (bool(d.get("gemini_api_key")) or bool(d.get("use_ollama"))) and bool(d.get("os_system"))
         except Exception:
             return False
 
     def _show_setup(self):
         ov = SetupOverlay(self.centralWidget())
         cw = self.centralWidget()
-        ow, oh = 460, 430
+        ow, oh = 460, 520
         ov.setGeometry(
             (cw.width()  - ow) // 2,
             (cw.height() - oh) // 2,
@@ -1462,13 +1534,16 @@ class MainWindow(QMainWindow):
         self._overlay = ov
 
     # Change signature:
-    def _on_setup_done(self, key: str, or_key: str, os_name: str):
+    def _on_setup_done(self, key: str, or_key: str, os_name: str, use_ollama: bool, ollama_model: str):
         os.makedirs(CONFIG_DIR, exist_ok=True)
         API_FILE.write_text(
             json.dumps({
                 "gemini_api_key":    key,
                 "openrouter_api_key": or_key,
                 "os_system":         os_name,
+                "use_ollama":        use_ollama,
+                "ollama_host":       "http://127.0.0.1:11434",
+                "ollama_model":      ollama_model,
             }, indent=4),
             encoding="utf-8",
         )

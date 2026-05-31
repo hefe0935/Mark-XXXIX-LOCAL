@@ -448,6 +448,31 @@ def dark_mode():
         except Exception as e:
             print(f"[Settings] dark_mode Linux failed: {e}")
 
+def light_mode():
+    if _OS == "Darwin":
+        subprocess.run(["osascript", "-e",
+            'tell app "System Events" to tell appearance preferences '
+            'to set dark mode to false'],
+            capture_output=True)
+    elif _OS == "Windows":
+        try:
+            import winreg
+            key_path = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
+            winreg.SetValueEx(key, "AppsUseLightTheme", 0, winreg.REG_DWORD, 1)
+            winreg.SetValueEx(key, "SystemUsesLightTheme", 0, winreg.REG_DWORD, 1)
+            winreg.CloseKey(key)
+        except Exception as e:
+            print(f"[Settings] light_mode registry failed: {e}")
+    else:
+        try:
+            subprocess.run(
+                ["gsettings", "set", "org.gnome.desktop.interface", "color-scheme", "'default'"],
+                capture_output=True
+            )
+        except Exception as e:
+            print(f"[Settings] light_mode Linux failed: {e}")
+
 def toggle_wifi():
     if _OS == "Darwin":
         iface = _get_macos_wifi_interface()
@@ -554,6 +579,8 @@ ACTION_MAP: dict[str, callable] = {
     "file_explorer":       open_file_explorer,
     "open_run":            open_run,
     "dark_mode":           dark_mode,
+    "light_mode":          light_mode,
+    "white_mode":          light_mode,
     "toggle_wifi":         toggle_wifi,
     "restart":             restart_computer,
     "shutdown":            shutdown_computer,

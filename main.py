@@ -3,7 +3,14 @@ import threading
 import json
 import sys
 import traceback
+import platform
+import subprocess
+import re
 from pathlib import Path
+
+APP_DIR = Path(__file__).resolve().parent
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
 
 import sounddevice as sd
 from google import genai
@@ -52,6 +59,17 @@ CHUNK_SIZE          = 1024
 def _get_api_key() -> str:
     with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
         return json.load(f)["gemini_api_key"]
+
+def _load_app_config() -> dict:
+    try:
+        with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _use_ollama_mode() -> bool:
+    cfg = _load_app_config()
+    return bool(cfg.get("use_ollama"))
 
 
 def _load_system_prompt() -> str:
@@ -868,12 +886,259 @@ class JarvisLive:
             print("[JARVIS] 🔄 Reconnecting in 3s...")
             await asyncio.sleep(3)
 
+class JarvisLocal:
+
+    def __init__(self, ui: JarvisUI):
+        self.ui = ui
+        self.ui.on_text_command = self._on_text_command
+        self._voice_lock = threading.Lock()
+
+    def _on_text_command(self, text: str):
+        threading.Thread(target=self._handle_text, args=(text,), daemon=True).start()
+
+    def _handle_text(self, text: str):
+        user_text = (text or "").strip()
+        if not user_text:
+            return
+        self.ui.set_state("THINKING")
+        try:
+            from or_client import client
+            tool_call = self._detect_local_tool(user_text, client)
+            if tool_call:
+                result = self._run_local_tool(tool_call)
+                self.ui.write_log(f"Jarvis: {result}")
+                self.speak(result)
+                return
+            memory = load_memory()
+            mem_str = format_memory_for_prompt(memory)
+            prompt = _load_system_prompt()
+            parts = []
+            if mem_str:
+                parts.append(mem_str)
+            parts.append(prompt)
+            answer = client.chat(
+                user_text,
+                system="\n\n".join(parts),
+                max_tokens=1024,
+                temperature=0.6,
+            ).strip()
+            if answer:
+                self.ui.write_log(f"Jarvis: {answer}")
+                self.speak(answer)
+                threading.Thread(
+                    target=_update_memory_async,
+                    args=(user_text, answer),
+                    daemon=True
+                ).start()
+        except Exception as e:
+            short = str(e)[:160]
+            self.ui.write_log(f"ERR: Local AI - {short}")
+            self.speak(f"Local AI encountered an error. {short}")
+        finally:
+            if not self.ui.muted:
+                self.ui.set_state("LISTENING")
+
+    def _detect_local_tool(self, text: str, client) -> dict | None:
+        direct_tool = self._direct_local_tool(text)
+        if direct_tool:
+            return direct_tool
+        direct = self._direct_open_app(text)
+        if direct:
+            return {"tool": "open_app", "parameters": {"app_name": direct}}
+
+        prompt = f"""Decide if this user message should call a desktop assistant tool.
+User message: {text}
+
+Available tools:
+- open_app: open or launch desktop apps. parameters: {{"app_name": "app name"}}
+- computer_settings: volume, brightness, window controls, keyboard, mouse, typing, tabs, reload, screenshots, lock, shutdown. parameters: {{"description": "original request"}}
+- web_search: search the web. parameters: {{"query": "search query"}}
+- weather_report: weather. parameters: {{"city": "city"}}
+- youtube_video: play or summarize YouTube videos. parameters: {{"action": "play|summarize|get_info|trending", "query": "query"}}
+- screen_process: analyze screen or camera. parameters: {{"angle": "screen|camera", "text": "question"}}
+- browser_control: web browsing actions. parameters: {{"description": "original request"}}
+- file_controller: file management. parameters: {{"action": "description", "path": ""}}
+- flight_finder: flight search. parameters: {{"description": "original request"}}
+- game_updater: game update or launcher tasks. parameters: {{"description": "original request"}}
+- desktop_control: desktop automation. parameters: {{"description": "original request"}}
+- computer_control: computer visual control. parameters: {{"description": "original request"}}
+
+Return only JSON in this shape:
+{{"tool": "tool_name_or_none", "parameters": {{}}}}
+
+Use "none" for normal conversation, vague messages, or questions that do not need a tool."""
+        try:
+            data = client.chat_json(prompt, max_tokens=300)
+        except Exception:
+            return None
+        tool = str(data.get("tool", "none")).strip()
+        if not tool or tool == "none":
+            return None
+        params = data.get("parameters", {})
+        if not isinstance(params, dict):
+            params = {}
+        if tool == "open_app" and not params.get("app_name"):
+            app = self._direct_open_app(text)
+            if app:
+                params["app_name"] = app
+        return {"tool": tool, "parameters": params}
+
+    def _direct_local_tool(self, text: str) -> dict | None:
+        lowered = text.strip().lower()
+        if re.search(r"\b(shut\s*down|shutdown|stop|close|exit|quit)\b.*\b(jarvis|assistant|yourself)\b", lowered):
+            return {"tool": "shutdown_jarvis", "parameters": {}}
+        if re.search(r"\b(jarvis|assistant)\b.*\b(shut\s*down|shutdown|stop|close|exit|quit)\b", lowered):
+            return {"tool": "shutdown_jarvis", "parameters": {}}
+        if re.search(r"\b(light|white)\s+mode\b", lowered):
+            return {"tool": "computer_settings", "parameters": {"action": "light_mode"}}
+        if re.search(r"\bdark\s+mode\b", lowered):
+            return {"tool": "computer_settings", "parameters": {"action": "dark_mode"}}
+        folder_match = re.search(
+            r"\b(?:create|make|add)\s+(?:a\s+)?folder(?:\s+in\s+|\s+on\s+|\s+at\s+)(desktop|desk(?:\s*top)?|dekstop|downloads|documents|home)\s+(?:called|named|as)\s+(.+)$",
+            lowered,
+        )
+        if folder_match:
+            path = "desktop" if folder_match.group(1).replace(" ", "") in ("desktop", "desk", "dekstop") else folder_match.group(1)
+            name = folder_match.group(2).strip().strip("\"'")
+            return {"tool": "file_controller", "parameters": {"action": "create_folder", "path": path, "name": name}}
+        folder_match = re.search(
+            r"\b(?:create|make|add)\s+(?:a\s+)?folder\s+(?:called|named|as)\s+(.+?)(?:\s+(?:in|on|at)\s+(desktop|desk(?:\s*top)?|dekstop|downloads|documents|home))?$",
+            lowered,
+        )
+        if folder_match:
+            name = folder_match.group(1).strip().strip("\"'")
+            path = folder_match.group(2) or "desktop"
+            path = "desktop" if path.replace(" ", "") in ("desktop", "desk", "dekstop") else path
+            return {"tool": "file_controller", "parameters": {"action": "create_folder", "path": path, "name": name}}
+        return None
+
+    def _direct_open_app(self, text: str) -> str | None:
+        lowered = text.strip().lower()
+        patterns = [
+            r"^(?:please\s+)?(?:can you\s+)?(?:open|launch|start|run)\s+(.+)$",
+            r"^(?:please\s+)?(?:can you\s+)?(?:open up)\s+(.+)$",
+        ]
+        for pattern in patterns:
+            match = re.match(pattern, lowered)
+            if match:
+                app = match.group(1).strip()
+                app = re.sub(r"\b(?:app|application|program)\b$", "", app).strip()
+                return app or None
+        return None
+
+    def _run_local_tool(self, call: dict) -> str:
+        name = str(call.get("tool", "")).strip()
+        args = call.get("parameters") or {}
+        if not isinstance(args, dict):
+            args = {}
+        try:
+            if name == "open_app":
+                return open_app(parameters=args, response=None, player=self.ui) or "Done."
+            if name == "weather_report":
+                return weather_action(parameters=args, player=self.ui) or "Weather delivered."
+            if name == "browser_control":
+                return browser_control(parameters=args, player=self.ui) or "Done."
+            if name == "file_controller":
+                action = str(args.get("action", "")).lower().strip().replace(" ", "_").replace("-", "_")
+                if action:
+                    args["action"] = action
+                return file_controller(parameters=args, player=self.ui) or "Done."
+            if name == "send_message":
+                return send_message(parameters=args, response=None, player=self.ui, session_memory=None) or "Message sent."
+            if name == "reminder":
+                return reminder(parameters=args, response=None, player=self.ui) or "Reminder set."
+            if name == "youtube_video":
+                return youtube_video(parameters=args, response=None, player=self.ui) or "Done."
+            if name == "file_processor":
+                if not args.get("file_path") and self.ui.current_file:
+                    args["file_path"] = self.ui.current_file
+                return file_processor(parameters=args, player=self.ui, speak=self.speak) or "Done."
+            if name == "screen_process":
+                threading.Thread(
+                    target=screen_process,
+                    kwargs={"parameters": args, "response": None, "player": self.ui, "session_memory": None},
+                    daemon=True
+                ).start()
+                return "Vision module activated."
+            if name == "computer_settings":
+                if not args.get("description"):
+                    args["description"] = str(args.get("action", ""))
+                return computer_settings(parameters=args, response=None, player=self.ui) or "Done."
+            if name == "desktop_control":
+                return desktop_control(parameters=args, player=self.ui) or "Done."
+            if name == "code_helper":
+                return code_helper(parameters=args, player=self.ui, speak=self.speak) or "Done."
+            if name == "dev_agent":
+                return dev_agent(parameters=args, player=self.ui, speak=self.speak) or "Done."
+            if name == "agent_task":
+                from agent.task_queue import get_queue, TaskPriority
+                priority_map = {"low": TaskPriority.LOW, "normal": TaskPriority.NORMAL, "high": TaskPriority.HIGH}
+                priority = priority_map.get(str(args.get("priority", "normal")).lower(), TaskPriority.NORMAL)
+                task_id = get_queue().submit(goal=args.get("goal", ""), priority=priority, speak=self.speak)
+                return f"Task started (ID: {task_id})."
+            if name == "web_search":
+                return web_search_action(parameters=args, player=self.ui) or "Done."
+            if name == "computer_control":
+                return computer_control(parameters=args, player=self.ui) or "Done."
+            if name == "game_updater":
+                return game_updater(parameters=args, player=self.ui, speak=self.speak) or "Done."
+            if name == "flight_finder":
+                return flight_finder(parameters=args, player=self.ui) or "Done."
+            if name == "shutdown_jarvis":
+                self.ui.write_log("SYS: Shutdown requested.")
+                self.speak("Goodbye, sir.")
+                def _shutdown():
+                    import time, os
+                    time.sleep(1)
+                    os._exit(0)
+                threading.Thread(target=_shutdown, daemon=True).start()
+                return "Goodbye, sir."
+            return f"Unknown tool: {name}"
+        except Exception as e:
+            traceback.print_exc()
+            return f"Tool '{name}' failed: {e}"
+
+    def speak(self, text: str):
+        if self.ui.muted:
+            return
+        threading.Thread(target=self._speak_blocking, args=(text,), daemon=True).start()
+
+    def _speak_blocking(self, text: str):
+        with self._voice_lock:
+            self.ui.set_state("SPEAKING")
+            try:
+                system = platform.system().lower()
+                if system == "windows":
+                    import comtypes
+                    import comtypes.client
+                    comtypes.CoInitialize()
+                    voice = comtypes.client.CreateObject("SAPI.SpVoice")
+                    try:
+                        voice.Speak(text)
+                    finally:
+                        comtypes.CoUninitialize()
+                elif system == "darwin":
+                    subprocess.run(["say", text], timeout=120)
+                else:
+                    subprocess.run(["spd-say", text], timeout=120)
+            except Exception as e:
+                self.ui.write_log(f"ERR: Voice - {str(e)[:120]}")
+            finally:
+                if not self.ui.muted:
+                    self.ui.set_state("LISTENING")
+
+    async def run(self):
+        self.ui.set_state("LISTENING")
+        self.ui.write_log("SYS: JARVIS online in local Ollama mode.")
+        while True:
+            await asyncio.sleep(1)
+
 def main():
     ui = JarvisUI("face.png")
 
     def runner():
         ui.wait_for_api_key()
-        jarvis = JarvisLive(ui)
+        jarvis = JarvisLocal(ui) if _use_ollama_mode() else JarvisLive(ui)
         try:
             asyncio.run(jarvis.run())
         except KeyboardInterrupt:
